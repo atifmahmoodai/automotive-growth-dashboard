@@ -34,7 +34,7 @@ export function dashboard({snapshots,users,target,user,now=new Date()}){
  const capacities=allJobs?.filter(x=>x.kind==='capacity')??[],used=allJobs?.filter(x=>x.kind==='job'&&x.bay!==null)??[];
  const uncovered=used.some(j=>!capacities.some(c=>c.day===j.day&&c.bay===j.bay))||(allJobs??[]).some(j=>j.kind==='job'&&j.bay===null&&j.bayMinutes>0);
  result.bays=capacities.length&&!uncovered?{bookedMinutes:sum(used,x=>x.bayMinutes),availableMinutes:sum(capacities,x=>x.minutes),utilization:ratio(sum(used,x=>x.bayMinutes),sum(capacities,x=>x.minutes))}:null;
- if(result.bays?.utilization>1)alerts.push({id:'bay',tone:'danger',text:'Scheduled bay minutes exceed supplied availability. Check overlapping bookings.'});
+ if(result.bays?.utilization>1)alerts.push({id:'bay',tone:'danger',text:'Recorded bay minutes exceed supplied availability. Check overlapping bookings.'});
  const ads=records('hyros');result.ads=ads?{spendCents:sum(ads,x=>x.spendCents),revenueCents:sum(ads,x=>x.revenueCents),leads:ads.some(x=>x.leads===null)?null:sum(ads,x=>x.leads),campaigns:ads}:null;
  if(result.ads){result.ads.roas=ratio(result.ads.revenueCents,result.ads.spendCents);result.ads.cplCents=ratio(result.ads.spendCents,result.ads.leads);if(target&&result.ads.roas!==null&&result.ads.roas<Number(target.minimum_roas))alerts.push({id:'roas',tone:'warning',text:'Attributed return on ad spend is below target.'});}
  if(user.role==='owner'){const f=records('qbo')?.[0];result.finance=f?{...f,netMargin:ratio(f.netCents,f.incomeCents)}:null;}

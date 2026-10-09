@@ -1,11 +1,11 @@
 import React,{useState,useEffect} from 'react';
 import {createRoot} from 'react-dom/client';
 import './style.css';
-let csrf='';
+let csrf='',displayTimezone='UTC';
 async function api(url,method='GET',body){const r=await fetch('/api'+url,{method,headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},...(body===undefined?{}:{body:JSON.stringify(body)})});let data;try{data=await r.json();}catch{throw new Error('The server is unavailable. Please retry.');}if(!r.ok){if(r.status===401&&url!=='/login')window.dispatchEvent(new Event('session-expired'));throw new Error(data.error||'Request failed');}return data;}
 const brands={ghl:'GoHighLevel',tintwiz:'TintWiz',qbo:'QuickBooks',hyros:'Hyros'};
 const count=v=>v==null?'—':new Intl.NumberFormat().format(v),pct=v=>v==null?'—':`${Math.round(v*100)}%`,fixed=v=>v==null?'—':new Intl.NumberFormat('en',{maximumFractionDigits:1}).format(v);
-const date=v=>v?new Date(v).toLocaleString(): 'Not supplied';
+const date=v=>v?new Date(v).toLocaleString('en',{timeZone:displayTimezone}): 'Not supplied';
 function Icon({name}){return <span className="icon" aria-hidden="true">{({Overview:'◫',Team:'♙',Connections:'⇄',Activity:'≡',People:'◎'})[name]||'↗'}</span>;}
 function FormField({label,...props}){return <label>{label}<input {...props}/></label>;}
 function App(){
@@ -14,7 +14,8 @@ function App(){
  useEffect(()=>{if(user){const end=new Intl.DateTimeFormat('en-CA',{timeZone:user.timezone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()),r={start:end.slice(0,8)+'01',end};setRange(r);setDates(r);setPage('Overview');}},[user?.id]);
  useEffect(()=>{if(!user||!range)return;let active=true;setData(null);api('/dashboard?'+new URLSearchParams(range)).then(d=>{if(active)setData(d);}).catch(e=>{if(active)setError(e.message);});return()=>{active=false;};},[user,range,revision]);
  async function act(fn,message=''){setError('');setNotice('');setBusy(true);try{await fn();if(message)setNotice(message);setRevision(x=>x+1);}catch(e){setError(e.message);}finally{setBusy(false);}}
- const money=v=>v==null?'—':new Intl.NumberFormat('en',{style:'currency',currency:user?.currency||'USD',maximumFractionDigits:0}).format(v/100);
+ if(user)displayTimezone=user.timezone;
+ const money=v=>v==null?'—':new Intl.NumberFormat('en',{style:'currency',currency:user?.currency||'USD',minimumFractionDigits:0,maximumFractionDigits:2}).format(v/100);
  if(!ready)return <div className="boot">Loading Bayline…</div>;
  if(!user)return <main className="login"><section className="login-story"><div className="wordmark"><b className="logo">B</b> BAYLINE<span>GROWTH</span></div><div><p className="eyebrow">THE BUSINESS BEHIND THE FINISH</p><h1>A clearer view.<br/>A stronger shop.</h1><p>Leads, service performance and business results.<br/>One place to see what needs your attention.</p><div className="story-lines"><i/><i/><i/><i/><i/></div></div><small>TINT · CERAMIC · PPF · WRAP</small></section><section className="login-panel"><p className="eyebrow">WELCOME BACK</p><h2>Sign in to your workspace</h2><p className="muted">Use the account provided by your business owner.</p>{error&&<p role="alert" className="error">{error}</p>}<form onSubmit={e=>{e.preventDefault();const f=new FormData(e.currentTarget);act(async()=>{await api('/login','POST',Object.fromEntries(f));const u=await api('/me');csrf=u.csrf;setUser(u);});}}><FormField label="Email address" name="email" type="email" autoComplete="username" required/><FormField label="Password" name="password" type="password" autoComplete="current-password" required maxLength={128}/><button disabled={busy} className="primary">{busy?'Signing in…':'Sign in →'}</button></form><small className="muted">Need access or a password reset? Contact your administrator.</small></section></main>;
  const nav=['Overview',...(user.role!=='team'?['Team']:[]),...(user.role==='owner'?['Connections','Activity','People']:[])];
