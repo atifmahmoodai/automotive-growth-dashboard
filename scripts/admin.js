@@ -1,0 +1,6 @@
+import {randomUUID} from 'node:crypto';
+import {database,migrate} from '../backend/db.js';
+import {hashPassword,email} from '../backend/security.js';
+import {text} from '../backend/contracts.js';
+import {audit} from '../backend/imports.js';
+const db=await database();try{await migrate(db);const address=email(process.env.ADMIN_EMAIL),hash=await hashPassword(process.env.ADMIN_PASSWORD);if(process.argv.includes('--reset')){await db.transaction(async tx=>{const r=await tx.query('UPDATE users SET password=$1 WHERE email=$2 RETURNING id',[hash,address]);if(!r.rows.length)throw new Error('Account not found');await tx.query('DELETE FROM sessions WHERE user_id=$1',[r.rows[0].id]);await audit(tx,r.rows[0].id,'password_reset_by_operator',r.rows[0].id);});console.log('Password changed; sessions revoked.');}else{const id=randomUUID();await db.transaction(async tx=>{await tx.query('LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE');if((await tx.query("SELECT id FROM users WHERE role='owner' AND active=true")).rows.length)throw new Error('Owner already exists. Manage members through the dashboard.');await tx.query("INSERT INTO users(id,email,name,password,role) VALUES($1,$2,$3,$4,'owner')",[id,address,text(process.env.ADMIN_NAME||'Business owner',100),hash]);await audit(tx,id,'owner_bootstrapped',id);});console.log('Owner account created.');}}finally{await db.close();}

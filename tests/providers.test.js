@@ -1,0 +1,36 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {fixture,login} from './helpers.js';
+import {qboReport,readGHL,readHyros,requestJSON} from '../backend/providers.js';
+import {seal,unseal,saveToken,access} from '../backend/oauth.js';
+import {runOne} from '../backend/worker.js';
+import {randomUUID} from 'node:crypto';
+const json=value=>new Response(JSON.stringify(value),{status:200,headers:{'content-type':'application/json'}});
+const env={TOKEN_ENCRYPTION_KEY:'a'.repeat(64),QBO_CLIENT_ID:'fixture',QBO_CLIENT_SECRET:'fixture-secret',QBO_REALM_ID:'12345'};
+const report=()=>({Header:{ReportName:'ProfitAndLoss',ReportBasis:'Accrual',StartPeriod:'2026-01-01',EndPeriod:'2026-01-31',Currency:'USD',SummarizeColumnsBy:'Total'},Columns:{Column:[{ColType:'Account'},{ColType:'Money'}]},Rows:{Row:[['Income','100.00'],['GrossProfit','80.00'],['Expenses','30.00'],['NetIncome','52.00']].map(([group,value])=>({group,Summary:{ColData:[{value:'Localized label'},{value}]}}))}});
+test('P&L uses stable group IDs, exact dates/currency/basis, and preserves net other income',()=>{
+ const options={start:'2026-01-01',end:'2026-01-31',currency:'USD',basis:'Accrual'},r=qboReport(report(),options)[0];assert.equal(r.incomeCents,10000);assert.equal(r.cogsCents,2000);assert.equal(r.expensesCents,3000);assert.equal(r.netCents,5200);assert.throws(()=>qboReport(report(),{...options,currency:'EUR'}));const bad=report();bad.Rows.Row.pop();assert.throws(()=>qboReport(bad,options),/missing/);bad.Header.Option=[{Name:'NoReportData',Value:'true'}];bad.Rows.Row=[];assert.equal(qboReport(bad,options)[0].netCents,0);
+});
+test('GHL uses documented v3 location parameters, complete pages and explicit custom fields',async()=>{
+ const settings={currency:'USD',timezone:'UTC',env:{GHL_TOKEN:'fixture',GHL_LOCATION_ID:'location',GHL_FIRST_CONTACT_FIELD:'first'}};const row={id:'lead-1',createdAt:'2026-01-02T00:00:00Z',assignedTo:'person',pipelineStageId:'stage',status:'open',customFields:[{id:'first',fieldValue:'2026-01-02T00:05:00Z'}]};let calls=0;
+ const fetcher=async(url,opts)=>{assert.equal(opts.headers.Version,'v3');assert.equal(url.searchParams.get('locationId'),'location');calls++;return json({opportunities:calls===1?[row]:[{...row,id:'lead-2'}],meta:{total:2}});};const rows=await readGHL({start:'2026-01-01',end:'2026-01-31',config:settings,fetcher});assert.equal(rows.length,2);assert.equal(calls,2);assert.equal(rows[0].firstContactAt,'2026-01-02T00:05:00.000Z');assert.equal(rows[0].nextFollowupAt,null);
+ await assert.rejects(readGHL({start:'2026-01-01',end:'2026-01-31',config:settings,fetcher:async()=>json({opportunities:[row],meta:{}})}),/pagination/);await assert.rejects(readGHL({start:'2026-01-01',end:'2026-01-31',config:settings,fetcher:async()=>json({opportunities:[row],meta:{total:2}})}),/Duplicate/);
+});
+test('Hyros report enforces campaign coverage, precision and explicit model, currency and timezone',async()=>{
+ const config={currency:'USD',timezone:'UTC',env:{HYROS_API_KEY:'fixture',HYROS_TIMEZONE_CONFIRMED:'UTC',HYROS_CAMPAIGNS:JSON.stringify([{id:'1',name:'Search',channel:'Google',level:'google_v2_campaign'}])}};
+ const args={start:'2026-01-01',end:'2026-01-31',config};const rows=await readHyros({...args,fetcher:async(u,o)=>{assert.equal(u.origin,'https://api.hyros.com');assert.equal(u.pathname,'/v1/api/v1.0/attribution');assert.equal(u.searchParams.get('attributionModel'),'last_click');assert.equal(u.searchParams.get('sourceConfiguration'),'ALL_SOURCES');assert.equal(o.headers['API-Key'],'fixture');return json({result:[{id:'1',cost:10.5,total_revenue:30,leads:0}]});}});assert.equal(rows[0].spendCents,1050);assert.equal(rows[0].leads,0);await assert.rejects(readHyros({...args,fetcher:async()=>json({result:[]})}),/every configured/);await assert.rejects(readHyros({...args,fetcher:async()=>json({result:[{id:'1',cost:10.555,total_revenue:30,leads:1}]})}),/decimal/);
+});
+test('OAuth tokens are authenticated-encrypted, rotate durably and hold on ambiguous refresh',async()=>{
+ const f=await fixture(env);try{const t={access:'old-access',refresh:'old-refresh',expires:'2020-01-01T00:00:00Z'},encrypted=seal(t,f.settings);assert(!encrypted.includes('old-refresh'));assert.deepEqual(unseal(encrypted,f.settings),t);assert.throws(()=>unseal(encrypted.slice(0,-3)+'aaa',f.settings));await saveToken(f.db,t,'12345',f.settings);
+ const a=await access(f.db,f.settings,async(u,o)=>{assert.match(o.body,/old-refresh/);const row=(await f.db.query("SELECT busy FROM oauth_tokens WHERE provider='qbo'")).rows[0];assert.equal(row.busy,true);return json({access_token:'new-access',refresh_token:'new-refresh',expires_in:3600});});assert.equal(a.accessToken,'new-access');const stored=(await f.db.query('SELECT * FROM oauth_tokens')).rows[0];assert.equal(unseal(stored.encrypted,f.settings).refresh,'new-refresh');assert.equal(stored.busy,false);
+ await f.db.query("UPDATE oauth_tokens SET expires_at='2020-01-01'");await assert.rejects(access(f.db,f.settings,async()=>{throw new Error('network');}));await assert.rejects(access(f.db,f.settings,async()=>{assert.fail('must not replay refresh');}),/reconnection/);
+ }finally{await f.close();}
+});
+test('OAuth state is one-use, bound to the initiating owner session and approved realm',async()=>{
+ let calls=0;const f=await fixture(env,async()=>{calls++;return json({access_token:'access',refresh_token:'refresh',expires_in:3600});});try{const own=await login(f),other=await login(f);let r=await own.mutate('post','/api/oauth/qbo/start',{}).expect(200),state=new URL(r.body.url).searchParams.get('state');const callback='/api/oauth/qbo/callback?'+new URLSearchParams({state,code:'code',realmId:'12345'});await other.client.get(callback).expect(403);await own.client.get(callback).expect(302);await own.client.get(callback).expect(403);assert.equal(calls,1);r=await own.mutate('post','/api/oauth/qbo/start',{});state=new URL(r.body.url).searchParams.get('state');await own.client.get('/api/oauth/qbo/callback?'+new URLSearchParams({state,code:'code',realmId:'98765'})).expect(403);assert.equal(calls,1);
+ }finally{await f.close();}
+});
+test('worker queues review only; failed reads retain previous snapshots and record safe error',async()=>{
+ const f=await fixture({GHL_TOKEN:'fixture',GHL_LOCATION_ID:'location'});try{let id=randomUUID();await f.db.query("INSERT INTO sync_jobs(id,provider,start_day,end_day,user_id) VALUES($1,'ghl','2026-01-01','2026-01-31',$2)",[id,f.ids.owner]);assert.equal(await runOne(f.db,f.settings,async()=>json({opportunities:[],meta:{total:0}})),true);assert.equal((await f.db.query('SELECT status FROM sync_jobs WHERE id=$1',[id])).rows[0].status,'succeeded');assert.equal((await f.db.query('SELECT * FROM snapshots')).rows.length,0);assert.equal((await f.db.query('SELECT * FROM batches')).rows.length,1);
+ id=randomUUID();await f.db.query("INSERT INTO sync_jobs(id,provider,start_day,end_day,user_id) VALUES($1,'ghl','2026-01-01','2026-01-31',$2)",[id,f.ids.owner]);await runOne(f.db,f.settings,async()=>new Response('secret provider error',{status:401}));const row=(await f.db.query('SELECT * FROM sync_jobs WHERE id=$1',[id])).rows[0];assert.equal(row.status,'failed');assert(!row.message.includes('secret'));assert.equal((await f.db.query('SELECT * FROM batches')).rows.length,1);
+ }finally{await f.close();}
+});

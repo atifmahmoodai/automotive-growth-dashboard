@@ -1,0 +1,18 @@
+CREATE TABLE IF NOT EXISTS users(id uuid PRIMARY KEY,email text UNIQUE NOT NULL,name text NOT NULL,password text NOT NULL,role text NOT NULL CHECK(role IN ('owner','manager','team')),ghl_key text UNIQUE,tw_key text UNIQUE,active boolean NOT NULL DEFAULT true);
+CREATE TABLE IF NOT EXISTS sessions(hash text PRIMARY KEY,user_id uuid REFERENCES users(id),csrf text NOT NULL,expires_at timestamptz NOT NULL);
+CREATE TABLE IF NOT EXISTS throttles(key text PRIMARY KEY,count integer NOT NULL,expires_at timestamptz NOT NULL);
+CREATE TABLE IF NOT EXISTS source_versions(provider text PRIMARY KEY,version integer NOT NULL DEFAULT 0);
+INSERT INTO source_versions(provider) VALUES('ghl'),('tintwiz'),('qbo'),('hyros') ON CONFLICT DO NOTHING;
+CREATE TABLE IF NOT EXISTS batches(id uuid PRIMARY KEY,provider text NOT NULL REFERENCES source_versions(provider),start_day text NOT NULL,end_day text NOT NULL,payload jsonb NOT NULL,digest text NOT NULL,base_version integer NOT NULL,status text NOT NULL DEFAULT 'review' CHECK(status IN ('review','applied','rejected')),created_by uuid REFERENCES users(id),created_at timestamptz NOT NULL DEFAULT now(),applied_at timestamptz);
+CREATE TABLE IF NOT EXISTS snapshots(provider text NOT NULL REFERENCES source_versions(provider),start_day text NOT NULL,end_day text NOT NULL,batch_id uuid REFERENCES batches(id),payload jsonb NOT NULL,updated_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(provider,start_day,end_day));
+CREATE TABLE IF NOT EXISTS targets(start_day text NOT NULL,end_day text NOT NULL,revenue_cents bigint NOT NULL CHECK(revenue_cents>0),response_minutes integer NOT NULL CHECK(response_minutes BETWEEN 1 AND 1440),close_percent integer NOT NULL CHECK(close_percent BETWEEN 1 AND 100),minimum_roas numeric NOT NULL CHECK(minimum_roas BETWEEN 0 AND 100),updated_by uuid REFERENCES users(id),PRIMARY KEY(start_day,end_day));
+CREATE TABLE IF NOT EXISTS activity(id bigserial PRIMARY KEY,user_id uuid REFERENCES users(id),action text NOT NULL,reference text NOT NULL,created_at timestamptz NOT NULL DEFAULT now());
+CREATE OR REPLACE FUNCTION immutable_activity() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'Activity is append-only'; END; $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS activity_immutable ON activity;
+CREATE TRIGGER activity_immutable BEFORE UPDATE OR DELETE ON activity FOR EACH ROW EXECUTE FUNCTION immutable_activity();
+CREATE TABLE IF NOT EXISTS oauth_states(hash text PRIMARY KEY,session_hash text NOT NULL,expires_at timestamptz NOT NULL);
+CREATE TABLE IF NOT EXISTS oauth_tokens(provider text PRIMARY KEY,encrypted text NOT NULL,expires_at timestamptz NOT NULL,realm text NOT NULL);
+CREATE TABLE IF NOT EXISTS sync_jobs(id uuid PRIMARY KEY,provider text NOT NULL,start_day text NOT NULL,end_day text NOT NULL,user_id uuid REFERENCES users(id),status text NOT NULL DEFAULT 'queued',message text NOT NULL DEFAULT '',created_at timestamptz NOT NULL DEFAULT now(),started_at timestamptz,finished_at timestamptz);
+CREATE UNIQUE INDEX IF NOT EXISTS single_sync ON sync_jobs(provider) WHERE status IN ('queued','running');
+CREATE TABLE IF NOT EXISTS bridge_events(provider text NOT NULL,event_id text NOT NULL,batch_id uuid NOT NULL REFERENCES batches(id),PRIMARY KEY(provider,event_id));
+ALTER TABLE oauth_tokens ADD COLUMN IF NOT EXISTS busy boolean NOT NULL DEFAULT false;

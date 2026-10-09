@@ -1,0 +1,61 @@
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: bayline
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set the database administrator password}
+      BAYLINE_DB_PASSWORD: ${BAYLINE_DB_PASSWORD:?Set a distinct application password}
+    volumes:
+      - database:/var/lib/postgresql/data
+      - ./init-db.sh:/docker-entrypoint-initdb.d/10-app.sh:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d bayline']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+  web:
+    build: ..
+    env_file: ../.env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      TRUST_SINGLE_PROXY: 'true'
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ['/tmp']
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+  worker:
+    build: ..
+    env_file: ../.env
+    command: ['node','backend/worker.js']
+    environment:
+      NODE_ENV: production
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ['/tmp']
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+  proxy:
+    image: caddy:2
+    environment:
+      DOMAIN: ${DOMAIN:?Set your hostname}
+    ports: ['80:80','443:443']
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [web]
+    restart: unless-stopped
+volumes:
+  database:
+  caddy_data:
+  caddy_config:

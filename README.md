@@ -1,28 +1,55 @@
-# Automotive Growth Dashboard
+# Bayline Growth
 
-This repo is a project brief, not the client's private code. It records what the buyer asked for so the build can be scoped against a real paid post.
+A React + Node.js dashboard for a tint, ceramic, PPF and wrap business. It brings operational performance, accounting results and advertising attribution into one role-aware workspace, while keeping their different revenue definitions visible.
 
-## What this repo is about
+This is an independently built implementation of the [original project brief](docs/original-brief.md), not the client's private system. No real client accounts, credentials, messages or financial data were used. Live provider mapping, reconciliation and hosting acceptance remain installation tasks.
 
-A tint, ceramic, PPF, and wrap business posted a fixed $2,500 project for a web dashboard over four tools. The client had already hired 2 people and was interviewing 4 when the post was captured.
+## What is implemented
 
-## Source post
+- Responsive performance overview, exact-period revenue targets, service mix and daily completed-job revenue.
+- Lead creation cohorts, median speed-to-lead with timestamp coverage, decided-lead close rates, overdue follow-ups and team scorecards.
+- Bay utilization with explicit availability coverage; last-click advertising ROAS/CPL; owner-only QuickBooks P&L and net margin.
+- Owner, manager and team access enforced on the server. Team views contain only assigned work, with no revenue, advertising or accounting fields.
+- GoHighLevel read-only private integration, Hyros campaign reads, QuickBooks OAuth2 and P&L reads, and signed normalized imports for all four sources. TintWiz uses its documented Zapier integration rather than an assumed public REST API.
+- Complete-snapshot validation → owner review → atomic acceptance. Conflicting, stale or expired reviews cannot overwrite newer data. Accepted batches and activity remain in history.
+- Durable read queue, bounded external requests, encrypted OAuth tokens, conservative refresh recovery, CSRF/origin protection, session revocation and in-app KPI alerts.
+- Non-root Docker deployment, PostgreSQL 17, browser/role workflows, SQL recovery checks and CI.
 
-https://www.upwork.com/freelance-jobs/apply/Full-Stack-Automation-Developer-Automotive-Growth-Platform_~022030279606223382818/
+## Run locally
 
-## Client requirements
+Use Node 24 and a PostgreSQL database owned by a non-superuser application role. Copy `.env.example` to `.env`, configure `DATABASE_URL`, and keep local `APP_ORIGIN=http://localhost:3000`. This app supports one business, one two-decimal currency and one IANA timezone per installation.
 
-- React frontend and Node.js backend.
-- Connect GoHighLevel (pipeline, lead volume, stages), TintWiz (jobs, revenue by service, bay use), QuickBooks Online (P&L, margins), and Hyros (ad spend, ROAS, cost per lead).
-- Modules: revenue vs target, speed-to-lead, follow-up, close rate, team scorecards, service-line breakdown, ad attribution, alerts when KPIs miss.
-- OAuth where needed. Host on Railway, Render, or similar. Not a heavy AWS build.
-- Mobile-responsive. Roles: owner, manager, team.
-- Clean UI, no design fluff.
-- Fit: has built multi-API dashboards, can read API docs alone, has used at least 2 of the 4 platforms. GoHighLevel is a plus.
-- Milestones: auth and data pipeline, then KPI UI, then alerts, roles, and handoff.
+```sh
+npm ci
+npm run build
+# Set ADMIN_EMAIL, ADMIN_NAME and ADMIN_PASSWORD in your shell or a private env file.
+node --env-file=.env scripts/admin.js
+node --env-file=.env backend/server.js
+# In a separate process, after schema initialization:
+node --env-file=.env backend/worker.js
+```
 
-## Notes
+The server initializes the schema transactionally. Run one web instance during schema initialization/upgrades. The worker needs the same database and provider configuration. It only prepares pending reviews; an owner must accept them. No automatic approval, outbound messaging or third-party mutations are performed.
 
-- Requirements are taken from the public job post. They are not a signed contract.
-- Posts can close or change. Check the source link before bidding.
-- This repository was created as a working brief for atifmahmoodai.
+For a fictional, empty development database, set `ALLOW_DEMO=true` and a 12+ character `DEMO_PASSWORD`, then run `node --env-file=.env scripts/demo.js`. Demo accounts are `owner@example.test`, `manager@example.test` and `team@example.test`, all using that supplied password. Demo data uses UTC and is refused in production. Never run it against a client's database.
+
+## Verify
+
+```sh
+npm test                         # embedded PostgreSQL locally
+npm run build
+npx playwright install chromium
+npm run test:browser
+npm audit --omit=dev --audit-level=high
+```
+
+Set `TEST_DATABASE_URL` only to a disposable database: tests and browser verification DROP its public schema. GitHub Actions runs the suite against PostgreSQL 17 using a non-superuser, verifies desktop/mobile workflows, restores a database dump and builds the production image. Browser screenshots are retained as CI artifacts. Contract fixtures verify provider behavior; they do not prove a client's live integration is accepted.
+
+## Handoff
+
+- [Requirements and acceptance](docs/requirements.md)
+- [Metrics and import contract](docs/data-contract.md)
+- [Provider setup and source documentation](docs/integrations.md)
+- [Deployment, account recovery and backup/restore](docs/operations.md)
+
+A push to GitHub delivers source code. It does not create a client deployment or connect accounts. Use the acceptance checklist before reporting a live rollout complete.

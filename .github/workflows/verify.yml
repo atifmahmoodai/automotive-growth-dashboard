@@ -1,0 +1,63 @@
+name: Verify Bayline Growth
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: bayline
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: disposable-ci-admin
+        ports: ['5432:5432']
+        options: --health-cmd="pg_isready -U postgres" --health-interval=5s --health-timeout=5s --health-retries=20
+    env:
+      TEST_DATABASE_URL: postgresql://bayline:disposable-ci-app@127.0.0.1:5432/bayline
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Prepare application database role
+        env:
+          PGPASSWORD: disposable-ci-admin
+        run: psql -h 127.0.0.1 -U postgres -d bayline -v ON_ERROR_STOP=1 -c "CREATE ROLE bayline LOGIN CREATEDB NOSUPERUSER PASSWORD 'disposable-ci-app'; ALTER DATABASE bayline OWNER TO bayline; GRANT ALL ON SCHEMA public TO bayline;"
+      - name: Locked dependencies, tests, build and audit
+        run: |
+          npm ci
+          npm test
+          npm run build
+          npm audit --omit=dev --audit-level=high
+      - name: Browser workflow and responsive access checks
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:browser
+      - name: Verify database restoration
+        run: |
+          docker exec ${{ job.services.postgres.id }} pg_dump -U bayline -Fc bayline > /tmp/bayline.dump
+          docker exec ${{ job.services.postgres.id }} createdb -U bayline bayline_restored
+          docker exec -i ${{ job.services.postgres.id }} pg_restore -U bayline --no-owner --exit-on-error -d bayline_restored < /tmp/bayline.dump
+          test "$(docker exec ${{ job.services.postgres.id }} psql -U bayline -d bayline_restored -Atc 'SELECT count(*) FROM snapshots')" = 4
+          test "$(docker exec ${{ job.services.postgres.id }} psql -U bayline -d bayline_restored -Atc 'SELECT count(*) FROM users')" = 4
+          TEST_DATABASE_URL=postgresql://bayline:disposable-ci-app@127.0.0.1:5432/bayline_restored node scripts/verify-restore.js
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bayline-browser-evidence
+          path: evidence/
+          retention-days: 7
+  container:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t bayline:test .
+      - name: Verify runtime image
+        run: |
+          test "$(docker run --rm --entrypoint id bayline:test -u)" = 1000
+          docker run --rm --entrypoint node bayline:test --check backend/app.js
